@@ -25,11 +25,15 @@
 #include <WiFi.h>
 #include "ssl_client.h"
 
+#include "EspTlsWrappers.h"
+
 class WiFiClientSecure : public WiFiClient
 {
+friend class WiFiServerSecure;
 protected:
     sslclient_context *sslclient;
- 
+    std::unique_ptr<EspTlsServerSessionWrapper> _server_session;
+
     int _lastError = 0;
     int _peek = -1;
     int _timeout;
@@ -41,6 +45,8 @@ protected:
     const char *_psKey; // key in hex for PSK cipher suites
     const char **_alpn_protos;
     bool _use_ca_bundle;
+
+    WiFiClientSecure(std::unique_ptr<EspTlsServerSessionWrapper> server_session);
 
 public:
     WiFiClientSecure *next;
@@ -56,8 +62,11 @@ public:
     int connect(IPAddress ip, uint16_t port, const char *pskIdent, const char *psKey);
     int connect(const char *host, uint16_t port, const char *pskIdent, const char *psKey);
     int peek();
+    //moved from private:
+    using Print::write;
     size_t write(uint8_t data);
-    size_t write(const uint8_t *buf, size_t size);
+    // changed to virtual
+    virtual size_t write(const uint8_t *buf, size_t size) override;
     int available();
     int read();
     int read(uint8_t *buf, size_t size);
@@ -111,7 +120,7 @@ private:
     char *_streamLoad(Stream& stream, size_t size);
 
     //friend class WiFiServer;
-    using Print::write;
+    //using Print::write;
 };
 
 #endif /* _WIFICLIENT_H_ */

@@ -352,10 +352,15 @@ void stop_ssl_socket(sslclient_context *ssl_client, const char *rootCABuff, cons
 
 int data_to_read(sslclient_context *ssl_client)
 {
+    return data_to_read(&ssl_client->ssl_ctx);
+}
+
+int data_to_read(mbedtls_ssl_context *ssl_ctx)
+{
     int ret, res;
-    ret = mbedtls_ssl_read(&ssl_client->ssl_ctx, NULL, 0);
+    ret = mbedtls_ssl_read(ssl_ctx, NULL, 0);
     //log_e("RET: %i",ret);   //for low level debug
-    res = mbedtls_ssl_get_bytes_avail(&ssl_client->ssl_ctx);
+    res = mbedtls_ssl_get_bytes_avail(ssl_ctx);
     //log_e("RES: %i",res);    //for low level debug
     if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE && ret < 0) {
         return handle_error(ret);
@@ -366,10 +371,15 @@ int data_to_read(sslclient_context *ssl_client)
 
 int send_ssl_data(sslclient_context *ssl_client, const uint8_t *data, size_t len)
 {
+    return send_ssl_data(&ssl_client->ssl_ctx, data, len);
+}
+
+int send_ssl_data(mbedtls_ssl_context *ssl_ctx, const uint8_t *data, size_t len)
+{
     log_v("Writing HTTP request with %d bytes...", len); //for low level debug
     int ret = -1;
 
-    while ((ret = mbedtls_ssl_write(&ssl_client->ssl_ctx, data, len)) <= 0) {
+    while ((ret = mbedtls_ssl_write(ssl_ctx, data, len)) <= 0) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE && ret < 0) {
             log_v("Handling error %d", ret); //for low level debug
             return handle_error(ret);
@@ -383,10 +393,15 @@ int send_ssl_data(sslclient_context *ssl_client, const uint8_t *data, size_t len
 
 int get_ssl_receive(sslclient_context *ssl_client, uint8_t *data, int length)
 {
+    return get_ssl_receive(&ssl_client->ssl_ctx, data, length);
+}
+
+int get_ssl_receive(mbedtls_ssl_context *ssl_ctx, uint8_t *data, int length)
+{
     //log_d( "Reading HTTP response...");   //for low level debug
     int ret = -1;
 
-    ret = mbedtls_ssl_read(&ssl_client->ssl_ctx, data, length);
+    ret = mbedtls_ssl_read(ssl_ctx, data, length);
 
     //log_v( "%d bytes read", ret);   //for low level debug
     return ret;
