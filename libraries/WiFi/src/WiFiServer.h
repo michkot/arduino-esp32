@@ -27,13 +27,13 @@
 class WiFiServer : public Server {
   private:
     int sockfd;
-    int _accepted_sockfd = -1;
     IPAddress _addr;
     uint16_t _port;
     uint8_t _max_clients;
     bool _listening;
     bool _noDelay = false;
-
+  protected:
+    int _accepted_sockfd = -1;
   public:
     void listenOnLocalhost(){}
 
