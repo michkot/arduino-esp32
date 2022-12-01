@@ -23,6 +23,8 @@
 #include <lwip/netdb.h>
 #include <errno.h>
 
+#include <esp_debug_helpers.h>
+
 #define WIFI_CLIENT_DEF_CONN_TIMEOUT_MS  (3000)
 #define WIFI_CLIENT_MAX_WRITE_RETRY      (10)
 #define WIFI_CLIENT_SELECT_TIMEOUT_US    (1000000)
@@ -311,6 +313,7 @@ int WiFiClient::setSocketOption(int level, int option, const void* value, size_t
     int res = setsockopt(fd(), level, option, value, len);
     if(res < 0) {
         log_e("fail on %d, errno: %d, \"%s\"", fd(), errno, strerror(errno));
+        esp_backtrace_print(50);
     }
     return res;
 }
@@ -344,6 +347,7 @@ int WiFiClient::getOption(int option, int *value)
     int res = getsockopt(fd(), IPPROTO_TCP, option, (char *)value, &size);
     if(res < 0) {
         log_e("fail on fd %d, errno: %d, \"%s\"", fd(), errno, strerror(errno));
+        esp_backtrace_print(50);
     }
     return res;
 }
