@@ -43,10 +43,8 @@ void WiFiClientSecure::setSocket(int socket)
 }
 
 WiFiClientSecure::WiFiClientSecure()
+    : WiFiClient{}
 {
-    _connected = false;
-    _timeout = 30000; // Same default as ssl_client
-
     sslclient = new sslclient_context;
     ssl_init(sslclient);
     sslclient->socket = -1;
@@ -134,18 +132,11 @@ WiFiClientSecure &WiFiClientSecure::operator=(const WiFiClientSecure &other)
     return *this;
 }
 
-void WiFiClientSecure::stop()
-{
+void WiFiClientSecure::stop() {
     // if this was created from a local server, there would be no allocated sslclient
     if (sslclient) {
-        if (sslclient->socket >= 0) {
-            close(sslclient->socket);
-            sslclient->socket = -1;
-            _connected = false;
-            _peek = -1;
-        }
-        stop_ssl_socket(sslclient, _CA_cert, _cert, _private_key);
         // FIXME: callee does not do anything with the 2+ arguments!
+        stop_ssl(sslclient, _CA_cert, _cert, _private_key);
     }
     // if stop() is being called from destructor, this has been already release
     if (_server_session) {
@@ -161,45 +152,45 @@ void WiFiClientSecure::stop()
         sslclient->socket = -1;
         sslclient->handshake_timeout = 120000;
     }
+    _peek = -1;
+    WiFiClient::stop();
 }
 
 int WiFiClientSecure::connect(IPAddress ip, uint16_t port)
 {
     if (_pskIdent && _psKey)
-        return connect(ip, port, _pskIdent, _psKey);
-    return connect(ip, port, _CA_cert, _cert, _private_key);
+        return WiFiClientSecure::connect(ip, port, _pskIdent, _psKey);
+    return WiFiClientSecure::connect(ip, port, _CA_cert, _cert, _private_key);
 }
 
-int WiFiClientSecure::connect(IPAddress ip, uint16_t port, int32_t timeout){
+int WiFiClientSecure::connect(IPAddress ip, uint16_t port, int32_t timeout) {
     _timeout = timeout;
-    return connect(ip, port);
+    return WiFiClientSecure::connect(ip, port);
 }
 
-int WiFiClientSecure::connect(const char *host, uint16_t port)
-{
+int WiFiClientSecure::connect(const char *host, uint16_t port) {
     if (_pskIdent && _psKey)
-        return connect(host, port, _pskIdent, _psKey);
-    return connect(host, port, _CA_cert, _cert, _private_key);
+        return WiFiClientSecure::connect(host, port, _pskIdent, _psKey);
+    return WiFiClientSecure::connect(host, port, _CA_cert, _cert, _private_key);
 }
 
-int WiFiClientSecure::connect(const char *host, uint16_t port, int32_t timeout){
+int WiFiClientSecure::connect(const char *host, uint16_t port, int32_t timeout) {
     _timeout = timeout;
-    return connect(host, port);
+    return WiFiClientSecure::connect(host, port);
 }
 
-int WiFiClientSecure::connect(IPAddress ip, uint16_t port, const char *CA_cert, const char *cert, const char *private_key)
-{
-    return connect(ip.toString().c_str(), port, CA_cert, cert, private_key);
+int WiFiClientSecure::connect(IPAddress ip, uint16_t port, const char *CA_cert, const char *cert, const char *private_key) {
+    return WiFiClientSecure::connect(ip.toString().c_str(), port, CA_cert, cert, private_key);
 }
 
-int WiFiClientSecure::connect(const char *host, uint16_t port, const char *CA_cert, const char *cert, const char *private_key)
-{
-    // TODO: this is/did not doing stop before, potentially leaking memory ?!
-    // FIXME: it will also be new unsecure to do with addition of Server support
-    int ret = start_ssl_client(sslclient, host, port, _timeout, CA_cert, _use_ca_bundle, cert, private_key, NULL, NULL, _use_insecure, _alpn_protos);
+int WiFiClientSecure::connect(const char *host, uint16_t port, const char *CA_cert, const char *cert, const char *private_key) {
+    if (WiFiClient::connect(host, port, _timeout) == 0){
+        return 0;
+    }
+    int ret = start_ssl(sslclient, clientSocketHandle.get()->fd(), host, CA_cert, _use_ca_bundle, cert, private_key, NULL, NULL, _use_insecure, _alpn_protos);
     _lastError = ret;
     if (ret < 0) {
-        log_e("start_ssl_client: %d", ret);
+        log_e("start_ssl: %d", ret);
         stop();
         return 0;
     }
@@ -208,17 +199,19 @@ int WiFiClientSecure::connect(const char *host, uint16_t port, const char *CA_ce
 }
 
 int WiFiClientSecure::connect(IPAddress ip, uint16_t port, const char *pskIdent, const char *psKey) {
-    return connect(ip.toString().c_str(), port, pskIdent, psKey);
+    return WiFiClientSecure::connect(ip.toString().c_str(), port, pskIdent, psKey);
 }
 
 int WiFiClientSecure::connect(const char *host, uint16_t port, const char *pskIdent, const char *psKey) {
-    // TODO: this is/did not doing stop before, potentially leaking memory ?!
-    // FIXME: it will also be new unsecure to do with addition of Server support
-    log_v("start_ssl_client with PSK");
-    int ret = start_ssl_client(sslclient, host, port, _timeout, NULL, false, NULL, NULL, pskIdent, psKey, _use_insecure, _alpn_protos);
+    if (WiFiClient::connect(host, port, _timeout) == 0){
+        return 0;
+    }
+
+    log_v("start_ssl with PSK");
+    int ret = start_ssl(sslclient, clientSocketHandle.get()->fd(), host, NULL, false, NULL, NULL, pskIdent, psKey, _use_insecure, _alpn_protos);
     _lastError = ret;
     if (ret < 0) {
-        log_e("start_ssl_client: %d", ret);
+        log_e("start_ssl: %d", ret);
         stop();
         return 0;
     }

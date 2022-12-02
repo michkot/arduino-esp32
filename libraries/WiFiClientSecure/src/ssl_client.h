@@ -13,6 +13,7 @@
 #include "mbedtls/error.h"
 
 typedef struct sslclient_context {
+    // we need to grab a refernce to this for mbedtls_ssl_set_bio()
     int socket;
     mbedtls_ssl_context ssl_ctx;
     mbedtls_ssl_config ssl_conf;
@@ -29,8 +30,9 @@ typedef struct sslclient_context {
 
 
 void ssl_init(sslclient_context *ssl_client);
-int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t port, int timeout, const char *rootCABuff, bool useRootCABundle, const char *cli_cert, const char *cli_key, const char *pskIdent, const char *psKey, bool insecure, const char **alpn_protos);
-void stop_ssl_socket(sslclient_context *ssl_client, const char *rootCABuff, const char *cli_cert, const char *cli_key);
+// return 0 = ok
+int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const char *rootCABuff, bool useRootCABundle, const char *cli_cert, const char *cli_key, const char *pskIdent, const char *psKey, bool insecure, const char **alpn_protos);
+void stop_ssl(sslclient_context *ssl_client, const char *rootCABuff, const char *cli_cert, const char *cli_key);
 int data_to_read(sslclient_context *ssl_client);
 int data_to_read(mbedtls_ssl_context *ssl_ctx);
 int send_ssl_data(sslclient_context *ssl_client, const uint8_t *data, size_t len);

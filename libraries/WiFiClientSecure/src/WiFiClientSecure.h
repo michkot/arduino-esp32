@@ -36,7 +36,6 @@ protected:
 
     int _lastError = 0;
     int _peek = -1;
-    int _timeout;
     bool _use_insecure;
     const char *_CA_cert;
     const char *_cert;
@@ -121,6 +120,9 @@ private:
 
     //friend class WiFiServer;
     //using Print::write;
+
+    // takes ownership of the socket
+    void setSocket(int socket);
 };
 
 #endif /* _WIFICLIENT_H_ */

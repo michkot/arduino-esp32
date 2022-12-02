@@ -53,8 +53,8 @@ void ssl_init(sslclient_context *ssl_client)
     mbedtls_ctr_drbg_init(&ssl_client->drbg_ctx);
 }
 
-
-int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t port, int timeout, const char *rootCABuff, bool useRootCABundle, const char *cli_cert, const char *cli_key, const char *pskIdent, const char *psKey, bool insecure, const char **alpn_protos)
+// return 0 = ok
+int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const char *rootCABuff, bool useRootCABundle, const char *cli_cert, const char *cli_key, const char *pskIdent, const char *psKey, bool insecure, const char **alpn_protos)
 {
     char buf[512];
     int ret, flags;
@@ -64,87 +64,6 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
     if (rootCABuff == NULL && pskIdent == NULL && psKey == NULL && !insecure && !useRootCABundle) {
         return -1;
     }
-
-    log_v("Starting socket");
-    ssl_client->socket = -1;
-
-    ssl_client->socket = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (ssl_client->socket < 0) {
-        log_e("ERROR opening socket");
-        return ssl_client->socket;
-    }
-
-    IPAddress srv((uint32_t)0);
-    if(!WiFiGenericClass::hostByName(host, srv)){
-        return -1;
-    }
-
-    fcntl( ssl_client->socket, F_SETFL, fcntl( ssl_client->socket, F_GETFL, 0 ) | O_NONBLOCK );
-    struct sockaddr_in serv_addr;
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = srv;
-    serv_addr.sin_port = htons(port);
-
-    if(timeout <= 0){
-        timeout = 30000; // Milli seconds.
-    }
-
-    fd_set fdset;
-    struct timeval tv;
-    FD_ZERO(&fdset);
-    FD_SET(ssl_client->socket, &fdset);
-    tv.tv_sec = timeout / 1000;
-    tv.tv_usec = (timeout % 1000) * 1000;
-
-    int res = lwip_connect(ssl_client->socket, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
-    if (res < 0 && errno != EINPROGRESS) {
-        log_e("connect on fd %d, errno: %d, \"%s\"", ssl_client->socket, errno, strerror(errno));
-        lwip_close(ssl_client->socket);
-        ssl_client->socket = -1;
-        return -1;
-    }
-
-    res = select(ssl_client->socket + 1, nullptr, &fdset, nullptr, timeout<0 ? nullptr : &tv);
-    if (res < 0) {
-        log_e("select on fd %d, errno: %d, \"%s\"", ssl_client->socket, errno, strerror(errno));
-        lwip_close(ssl_client->socket);
-        ssl_client->socket = -1;
-        return -1;
-    } else if (res == 0) {
-        log_i("select returned due to timeout %d ms for fd %d", timeout, ssl_client->socket);
-        lwip_close(ssl_client->socket);
-        ssl_client->socket = -1;
-        return -1;
-    } else {
-        int sockerr;
-        socklen_t len = (socklen_t)sizeof(int);
-        res = getsockopt(ssl_client->socket, SOL_SOCKET, SO_ERROR, &sockerr, &len);
-
-        if (res < 0) {
-            log_e("getsockopt on fd %d, errno: %d, \"%s\"", ssl_client->socket, errno, strerror(errno));
-            lwip_close(ssl_client->socket);
-            ssl_client->socket = -1;
-            return -1;
-        }
-
-        if (sockerr != 0) {
-            log_e("socket error on fd %d, errno: %d, \"%s\"", ssl_client->socket, sockerr, strerror(sockerr));
-            lwip_close(ssl_client->socket);
-            ssl_client->socket = -1;
-            return -1;
-        }
-    }
-
-
-#define ROE(x,msg) { if (((x)<0)) { log_e("LWIP Socket config of " msg " failed."); return -1; }}
-     ROE(lwip_setsockopt(ssl_client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),"SO_RCVTIMEO");
-     ROE(lwip_setsockopt(ssl_client->socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)),"SO_SNDTIMEO");
-
-     ROE(lwip_setsockopt(ssl_client->socket, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)),"TCP_NODELAY");
-     ROE(lwip_setsockopt(ssl_client->socket, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable)),"SO_KEEPALIVE");
-
-
 
     log_v("Seeding the random number generator");
     mbedtls_entropy_init(&ssl_client->entropy_ctx);
@@ -267,6 +186,7 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
         return handle_error(ret);
     }
 
+    ssl_client->socket = socket;
     mbedtls_ssl_set_bio(&ssl_client->ssl_ctx, &ssl_client->socket, mbedtls_net_send, mbedtls_net_recv, NULL );
 
     log_v("Performing the SSL/TLS handshake...");
@@ -315,18 +235,14 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
 
     log_v("Free internal heap after TLS %u", ESP.getFreeHeap());
 
-    return ssl_client->socket;
+    return 0;
 }
 
 
-void stop_ssl_socket(sslclient_context *ssl_client, const char *rootCABuff, const char *cli_cert, const char *cli_key)
+// FIXME: callers expects this frees the 2+ arguments, but it ignores them!
+void stop_ssl(sslclient_context *ssl_client, const char *rootCABuff, const char *cli_cert, const char *cli_key)
 {
     log_v("Cleaning SSL connection.");
-
-    if (ssl_client->socket >= 0) {
-        lwip_close(ssl_client->socket);
-        ssl_client->socket = -1;
-    }
 
     // avoid memory leak if ssl connection attempt failed
     if (ssl_client->ssl_conf.ca_chain != NULL) {
@@ -347,6 +263,8 @@ void stop_ssl_socket(sslclient_context *ssl_client, const char *rootCABuff, cons
     memset(ssl_client, 0, sizeof(sslclient_context));
     
     ssl_client->handshake_timeout = timeout;
+
+    ssl_client->socket = -1;
 }
 
 

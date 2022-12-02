@@ -49,9 +49,13 @@ public:
     WiFiClient();
     WiFiClient(int fd);
     ~WiFiClient();
+    // returns boolean indicating success
     int connect(IPAddress ip, uint16_t port);
+    // returns boolean indicating success
     int connect(IPAddress ip, uint16_t port, int32_t timeout);
+    // returns boolean indicating success
     int connect(const char *host, uint16_t port);
+    // returns boolean indicating success
     int connect(const char *host, uint16_t port, int32_t timeout);
     size_t write(uint8_t data);
     size_t write(const uint8_t *buf, size_t size);

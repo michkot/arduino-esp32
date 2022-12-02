@@ -166,7 +166,7 @@ WiFiClient::WiFiClient():_connected(false),_timeout(WIFI_CLIENT_DEF_CONN_TIMEOUT
 WiFiClient::WiFiClient(int fd):_connected(true),_timeout(WIFI_CLIENT_DEF_CONN_TIMEOUT_MS),next(NULL)
 {
     clientSocketHandle = std::make_shared<WiFiSocketWrapper>(fd);
-    _rxBuffer.reset(new WiFiClientRxBuffer(fd));
+    _rxBuffer = std::make_shared<WiFiClientRxBuffer>(fd);
 }
 
 WiFiClient::~WiFiClient()
@@ -185,7 +185,7 @@ WiFiClient & WiFiClient::operator=(const WiFiClient &other)
 
 void WiFiClient::stop()
 {
-    clientSocketHandle = NULL;
+    clientSocketHandle.reset();
     _rxBuffer = NULL;
     _connected = false;
 }
@@ -196,8 +196,6 @@ int WiFiClient::connect(IPAddress ip, uint16_t port)
 }
 int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
 {
-    _timeout = timeout;
-    
     log_v("Starting socket");
 
     // FIXME: use IPPROTO_TCP instead of 0 ? - it was used in ssl_client of WiFiClientSecure
@@ -219,7 +217,7 @@ int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
     struct timeval tv;
     FD_ZERO(&fdset);
     FD_SET(sockfd, &fdset);
-    tv.tv_sec = _timeout / 1000;
+    tv.tv_sec = timeout / 1000;
     tv.tv_usec = 0;
 
 #ifdef ESP_IDF_VERSION_MAJOR
@@ -233,13 +231,13 @@ int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
         return 0;
     }
 
-    res = select(sockfd + 1, nullptr, &fdset, nullptr, _timeout<0 ? nullptr : &tv);
+    res = select(sockfd + 1, nullptr, &fdset, nullptr, timeout<0 ? nullptr : &tv);
     if (res < 0) {
         log_e("select on fd %d, errno: %d, \"%s\"", sockfd, errno, strerror(errno));
         close(sockfd);
         return 0;
     } else if (res == 0) {
-        log_i("select returned due to timeout %d ms for fd %d", _timeout, sockfd);
+        log_i("select returned due to timeout %d ms for fd %d", timeout, sockfd);
         close(sockfd);
         return 0;
     } else {
@@ -269,10 +267,15 @@ int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
     //ROE_WIFICLIENT (setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable)),"SO_KEEPALIVE");
 
     fcntl( sockfd, F_SETFL, fcntl( sockfd, F_GETFL, 0 ) & (~O_NONBLOCK) );
-    clientSocketHandle = std::make_shared<WiFiSocketWrapper>(sockfd);
-    _rxBuffer.reset(new WiFiClientRxBuffer(sockfd));
 
+    // if we got here, new socket was successfully open and we will release our share of the old one
+    clientSocketHandle = std::make_shared<WiFiSocketWrapper>(sockfd);
+    _rxBuffer = std::make_shared<WiFiClientRxBuffer>(sockfd);
     _connected = true;
+    // TODO: was this really intentional? 
+    // changing "default" timeout of this Client instance
+    _timeout = timeout;
+
     return 1;
 }
 
