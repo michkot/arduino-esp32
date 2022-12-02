@@ -66,6 +66,20 @@ WiFiClient WiFiServer::available(){
   return WiFiClient();
 }
 
+// Discards a client if there's an available connection waiting.  If one is discareded,
+// returns its remote IP and TCP port.
+std::tuple<IPAddress, uint16_t> WiFiServer::discardAvailable() {
+  if (!hasClient()) return {};
+  /* we know _accepted_sockfd is set, lwip_accept has been called */
+  
+  auto ip = WiFiClient::remoteIP(_accepted_sockfd);
+  auto port = WiFiClient::remotePort(_accepted_sockfd);
+
+  lwip_close(_accepted_sockfd);
+  
+  return std::make_tuple(std::move(ip), std::move(port));
+}
+
 void WiFiServer::begin(uint16_t port){
     begin(port, 1);
 }

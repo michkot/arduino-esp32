@@ -46,6 +46,7 @@ class WiFiServer : public Server {
     }
     ~WiFiServer(){ end();}
     WiFiClient available();
+    std::tuple<IPAddress, uint16_t> discardAvailable();
     WiFiClient accept(){return available();}
     void begin(uint16_t port=0);
     void begin(uint16_t port, int reuse_enable);
