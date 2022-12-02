@@ -26,6 +26,8 @@
 
 #include <WiFiSocketWrapper.h>
 
+#include <mbedtls/net_sockets.h>
+
 #include <esp_debug_helpers.h>
 
 #undef connect
@@ -82,6 +84,7 @@ WiFiClientSecure::WiFiClientSecure(const std::shared_ptr<EspTlsServerSessionWrap
     if (_server_session) {
         // we initalized WiFiClient with clientSocketHandle == nullptr, and _connected == false
         clientSocketHandle = std::make_shared<WiFiSocketWrapper>(_server_session->get_socket());
+        mbedtls_net_set_nonblock(static_cast<mbedtls_net_context*>((void*)&clientSocketHandle->sockfd));
         _connected = true;
     }
 }

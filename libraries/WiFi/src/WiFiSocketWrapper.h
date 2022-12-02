@@ -2,9 +2,10 @@
 
 class WiFiSocketWrapper {
 private:
-    int sockfd;
 
 public:
+    const int sockfd;
+    
     WiFiSocketWrapper(int fd);
     ~WiFiSocketWrapper();
     int fd();
