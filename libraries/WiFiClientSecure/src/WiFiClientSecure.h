@@ -110,11 +110,6 @@ public:
         return !this->operator==(rhs);
     };
 
-    int socket()
-    {
-        return sslclient->socket = -1;
-    }
-
 private:
     char *_streamLoad(Stream& stream, size_t size);
 
