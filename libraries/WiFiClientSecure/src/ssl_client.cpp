@@ -54,17 +54,31 @@ void ssl_init(sslclient_context *ssl_client)
 }
 
 // return 0 = ok
-int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const char *rootCABuff, bool useRootCABundle, const char *cli_cert, const char *cli_key, const char *pskIdent, const char *psKey, bool insecure, const char **alpn_protos)
+int start_ssl(sslclient_context *ssl_client, int socket, const char *host, unsigned long handshake_timeout, const sslclient_config& cfg)
 {
     char buf[512];
     int ret, flags;
     int enable = 1;
     log_v("Free internal heap before TLS %u", ESP.getFreeHeap());
 
-    if (rootCABuff == NULL && pskIdent == NULL && psKey == NULL && !insecure && !useRootCABundle) {
-        return -1;
+    {
+        int ctr = 0;
+        ctr += cfg.insecure == true;
+        ctr += cfg.useRootCABundle == true;
+        ctr += cfg.ca_cert != NULL;
+        ctr += cfg.pskIdent != NULL || cfg.psKey;
+        if (ctr != 1)
+        {   
+            log_e("exactly one server-verification method is allowed");
+            return -1;
+        }
     }
 
+    if ((cfg.cli_cert != NULL) != (cfg.cli_key != NULL)) {
+        log_e("client authentication is set-up only half-way");
+        return -1;
+    }
+    
     log_v("Seeding the random number generator");
     mbedtls_entropy_init(&ssl_client->entropy_ctx);
 
@@ -83,9 +97,9 @@ int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const
         return handle_error(ret);
     }
 
-    if (alpn_protos != NULL) {
+    if (cfg.alpn_protos != NULL) {
         log_v("Setting ALPN protocols");
-        if ((ret = mbedtls_ssl_conf_alpn_protocols(&ssl_client->ssl_conf, alpn_protos) ) != 0) {
+        if ((ret = mbedtls_ssl_conf_alpn_protocols(&ssl_client->ssl_conf, cfg.alpn_protos) ) != 0) {
             return handle_error(ret);
         }
     }
@@ -93,10 +107,11 @@ int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const
     // MBEDTLS_SSL_VERIFY_REQUIRED if a CA certificate is defined on Arduino IDE and
     // MBEDTLS_SSL_VERIFY_NONE if not.
 
-    if (insecure) {
+    if (cfg.insecure) {
         mbedtls_ssl_conf_authmode(&ssl_client->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
         log_d("WARNING: Skipping SSL Verification. INSECURE!");
-    } else if (rootCABuff != NULL) {
+    } else if (cfg.ca_cert != NULL) {
+        auto& rootCABuff = cfg.ca_cert;
         log_v("Loading CA cert");
         mbedtls_x509_crt_init(&ssl_client->ca_cert);
         mbedtls_ssl_conf_authmode(&ssl_client->ssl_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
@@ -108,14 +123,16 @@ int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const
             mbedtls_x509_crt_free(&ssl_client->ca_cert);
             return handle_error(ret);
         }
-    } else if (useRootCABundle) {
+    } else if (cfg.useRootCABundle) {
         log_v("Attaching root CA cert bundle");
         ret = esp_crt_bundle_attach(&ssl_client->ssl_conf);
 
         if (ret < 0) {
             return handle_error(ret);
         }
-    } else if (pskIdent != NULL && psKey != NULL) {
+    } else if (cfg.pskIdent != NULL && cfg.psKey != NULL) {
+        auto& pskIdent = cfg.pskIdent;
+        auto& psKey = cfg.psKey;
         log_v("Setting up PSK");
         // convert PSK from hex to binary
         if ((strlen(psKey) & 1) != 0 || strlen(psKey) > 2*MBEDTLS_PSK_MAX_LEN) {
@@ -149,7 +166,9 @@ int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const
         return -1;
     }
 
-    if (!insecure && cli_cert != NULL && cli_key != NULL) {
+    if (!cfg.insecure && cfg.cli_cert != NULL && cfg.cli_key != NULL) {
+        auto& cli_cert = cfg.cli_cert;
+        auto& cli_key = cfg.cli_key;
         mbedtls_x509_crt_init(&ssl_client->client_cert);
         mbedtls_pk_init(&ssl_client->client_key);
 
@@ -195,13 +214,13 @@ int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
             return handle_error(ret);
         }
-        if((millis()-handshake_start_time)>ssl_client->handshake_timeout)
+        if((millis()-handshake_start_time)>handshake_timeout)
             return -1;
         vTaskDelay(2);//2 ticks
     }
 
 
-    if (cli_cert != NULL && cli_key != NULL) {
+    if (cfg.cli_cert != NULL && cfg.cli_key != NULL) {
         log_d("Protocol is %s Ciphersuite is %s", mbedtls_ssl_get_version(&ssl_client->ssl_ctx), mbedtls_ssl_get_ciphersuite(&ssl_client->ssl_ctx));
         if ((ret = mbedtls_ssl_get_record_expansion(&ssl_client->ssl_ctx)) >= 0) {
             log_d("Record expansion is %d", ret);
@@ -221,26 +240,24 @@ int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const
         log_v("Certificate verified.");
     }
     
-    if (rootCABuff != NULL) {
+    if (cfg.ca_cert != NULL) {
         mbedtls_x509_crt_free(&ssl_client->ca_cert);
     }
 
-    if (cli_cert != NULL) {
+    if (cfg.cli_cert != NULL) {
         mbedtls_x509_crt_free(&ssl_client->client_cert);
     }
 
-    if (cli_key != NULL) {
+    if (cfg.cli_key != NULL) {
         mbedtls_pk_free(&ssl_client->client_key);
-    }    
+    }
 
     log_v("Free internal heap after TLS %u", ESP.getFreeHeap());
 
     return 0;
 }
 
-
-// FIXME: callers expects this frees the 2+ arguments, but it ignores them!
-void stop_ssl(sslclient_context *ssl_client, const char *rootCABuff, const char *cli_cert, const char *cli_key)
+void stop_ssl(sslclient_context *ssl_client)
 {
     log_v("Cleaning SSL connection.");
 
@@ -257,12 +274,9 @@ void stop_ssl(sslclient_context *ssl_client, const char *rootCABuff, const char 
     mbedtls_ctr_drbg_free(&ssl_client->drbg_ctx);
     mbedtls_entropy_free(&ssl_client->entropy_ctx);
     
-    // save only interesting field
-    int timeout = ssl_client->handshake_timeout;
-    // reset embedded pointers to zero
-    memset(ssl_client, 0, sizeof(sslclient_context));
-    
-    ssl_client->handshake_timeout = timeout;
+    // TODO: discuss -  I think is is not needed after all the frees
+    //// // reset embedded pointers to zero
+    //// memset(ssl_client, 0, sizeof(sslclient_context));
 
     ssl_client->socket = -1;
 }

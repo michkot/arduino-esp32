@@ -32,6 +32,23 @@
 #undef write
 #undef read
 
+class TlsSessionWrapper final {
+public:
+    sslclient_context ctx = {0};
+    TlsSessionWrapper();
+    ~TlsSessionWrapper();
+};
+
+TlsSessionWrapper::TlsSessionWrapper() {
+    ssl_init(&ctx);
+}
+
+TlsSessionWrapper::~TlsSessionWrapper() {
+    stop_ssl(&ctx);
+    log_v("");
+}
+
+
 void WiFiClientSecure::setSocket(int socket)
 {
     // TODO: use shared_ptr for sslclient_context
@@ -45,124 +62,70 @@ void WiFiClientSecure::setSocket(int socket)
 WiFiClientSecure::WiFiClientSecure()
   : WiFiClient{}
 {
-    sslclient = new sslclient_context;
-    ssl_init(sslclient);
-    sslclient->socket = -1;
-    sslclient->handshake_timeout = 120000;
-    _use_insecure = false;
-    _CA_cert = NULL;
-    _cert = NULL;
-    _private_key = NULL;
-    _pskIdent = NULL;
-    _psKey = NULL;
-    next = NULL;
-    _alpn_protos = NULL;
-    _use_ca_bundle = false;
 }
 
 
 WiFiClientSecure::WiFiClientSecure(int sock)
   : WiFiClient{sock}
 {
+    // TODO: discuss - this was setting _connected to true, but withotu context, which was a nonsense
+    //  I propose to just "throw error here"
+
+    // TLS context is not set-up, so we are not "connected" actually :/
     _connected = false;
-    _timeout = 30000; // Same default as ssl_client
-
-    sslclient = new sslclient_context;
-    ssl_init(sslclient);
-    sslclient->socket = sock;
-    sslclient->handshake_timeout = 120000;
-
-    if (sock >= 0) {
-        setSocket(sock);
-        _connected = true;
-    }
-
-    _CA_cert = NULL;
-    _cert = NULL;
-    _private_key = NULL;
-    _pskIdent = NULL;
-    _psKey = NULL;
-    next = NULL;
-    _alpn_protos = NULL;
 }
 
-WiFiClientSecure::WiFiClientSecure(std::unique_ptr<EspTlsServerSessionWrapper> server_session)
+WiFiClientSecure::WiFiClientSecure(const std::shared_ptr<EspTlsServerSessionWrapper>& server_session)
   : WiFiClient{}
 {
-    // _timeout and handshake_timeout are irrelevant
-
-    sslclient = nullptr;
-
-    _server_session = std::move(server_session);
-
+    _server_session = server_session;
     if (_server_session) {
-        setSocket(_server_session.get()->get_socket());
+        // we initalized WiFiClient with clientSocketHandle == nullptr, and _connected == false
+        clientSocketHandle = std::make_shared<WiFiSocketWrapper>(_server_session->get_socket());
         _connected = true;
     }
-
-    // copy paste from WiFiClientSecure::WiFiClientSecure(int sock)
-    _CA_cert = NULL;
-    _cert = NULL;
-    _private_key = NULL;
-    _pskIdent = NULL;
-    _psKey = NULL;
-    next = NULL;
-    _alpn_protos = NULL;
 }
 
 WiFiClientSecure::~WiFiClientSecure()
 {
-    clientSocketHandle.reset();
-    // release any WiFiServerSecure related connection
-    _server_session.reset();
     stop();
-    delete sslclient;
+    log_v("");
 }
 
 WiFiClientSecure &WiFiClientSecure::operator=(const WiFiClientSecure &other)
 {
     log_d("");
     esp_backtrace_print(50);
+    // comment about original code:
     // TODO: this copy assignemnt operator seems super weird! :
     // - our sslclient is STOPPED (deallocating all TLS context resources)
     // - just socket is copied to our sslclient
     // - !?! coping connected status?!
     //   - we can not continue communication on this (left-hand) side of the copy, since we do not have the active TLS context!
+
+
     stop();
-    sslclient->socket = other.sslclient->socket;
-    _connected = other._connected;
+    WiFiClient::operator=(other);
+    _client_session = other._client_session;
+    _server_session = other._server_session;
+
+    // TODO: should we also copy configuration? this is extra dangerous because of the _streamLoad function (see bellow)
+
     return *this;
 }
 
 void WiFiClientSecure::stop() {
-    // if this was created from a local server, there would be no allocated sslclient
-    if (sslclient) {
-        // FIXME: callee does not do anything with the 2+ arguments!
-        stop_ssl(sslclient, _CA_cert, _cert, _private_key);
-    }
-    // if stop() is being called from destructor, this has been already release
-    if (_server_session) {
-        // we are definitely NOT being called from destructor
-        // there is no way to re-attach this client back to the originating server
-        _server_session.reset();
-        // let's allocate standard sslclient as the ctor does now, to make it fully compatible with
-        // "obtain client from local server" -> "stop it" -> "use the client to connect to remote server"
-
-        // copy paste from WiFiClientSecure::WiFiClientSecure()
-        sslclient = new sslclient_context;
-        ssl_init(sslclient);
-        sslclient->socket = -1;
-        sslclient->handshake_timeout = 120000;
-    }
+    _client_session.reset();
+    _server_session.reset();
     _peek = -1;
     WiFiClient::stop();
 }
 
 int WiFiClientSecure::connect(IPAddress ip, uint16_t port)
 {
-    if (_pskIdent && _psKey)
-        return WiFiClientSecure::connect(ip, port, _pskIdent, _psKey);
-    return WiFiClientSecure::connect(ip, port, _CA_cert, _cert, _private_key);
+    if (_cfg.pskIdent && _cfg.psKey)
+        return WiFiClientSecure::connect(ip, port, _cfg.pskIdent, _cfg.psKey);
+    return WiFiClientSecure::connect(ip, port, _cfg.ca_cert, _cfg.cli_cert, _cfg.cli_cert);
 }
 
 int WiFiClientSecure::connect(IPAddress ip, uint16_t port, int32_t timeout) {
@@ -171,9 +134,9 @@ int WiFiClientSecure::connect(IPAddress ip, uint16_t port, int32_t timeout) {
 }
 
 int WiFiClientSecure::connect(const char *host, uint16_t port) {
-    if (_pskIdent && _psKey)
-        return WiFiClientSecure::connect(host, port, _pskIdent, _psKey);
-    return WiFiClientSecure::connect(host, port, _CA_cert, _cert, _private_key);
+    if (_cfg.pskIdent && _cfg.psKey)
+        return WiFiClientSecure::connect(host, port, _cfg.pskIdent, _cfg.psKey);
+    return WiFiClientSecure::connect(host, port, _cfg.ca_cert, _cfg.cli_cert, _cfg.cli_cert);
 }
 
 int WiFiClientSecure::connect(const char *host, uint16_t port, int32_t timeout) {
@@ -186,18 +149,14 @@ int WiFiClientSecure::connect(IPAddress ip, uint16_t port, const char *CA_cert, 
 }
 
 int WiFiClientSecure::connect(const char *host, uint16_t port, const char *CA_cert, const char *cert, const char *private_key) {
-    if (WiFiClient::connect(host, port, _timeout) == 0){
-        return 0;
-    }
-    int ret = start_ssl(sslclient, clientSocketHandle.get()->fd(), host, CA_cert, _use_ca_bundle, cert, private_key, NULL, NULL, _use_insecure, _alpn_protos);
-    _lastError = ret;
-    if (ret < 0) {
-        log_e("start_ssl: %d", ret);
-        stop();
-        return 0;
-    }
-    _connected = true;
-    return 1;
+    // TODO: dicuss - should we instead create a new cfg object and let the "default" values be alone?
+    setCACert(CA_cert);
+    setCertificate(cert);
+    setPrivateKey(private_key);
+
+    log_v("start_ssl with certs");
+    
+    return _connect(host, port, std::ref(_cfg));
 }
 
 int WiFiClientSecure::connect(IPAddress ip, uint16_t port, const char *pskIdent, const char *psKey) {
@@ -205,12 +164,21 @@ int WiFiClientSecure::connect(IPAddress ip, uint16_t port, const char *pskIdent,
 }
 
 int WiFiClientSecure::connect(const char *host, uint16_t port, const char *pskIdent, const char *psKey) {
+    // TODO: dicuss - should we instead create a new cfg object and let the "default" values be alone?
+    setPreSharedKey(pskIdent, psKey);
+
+    log_v("start_ssl with PSK");
+
+    return _connect(host, port, std::ref(_cfg));
+}
+
+
+int WiFiClientSecure::_connect(const char *host, uint16_t port, const sslclient_config& cfg) {
     if (WiFiClient::connect(host, port, _timeout) == 0){
         return 0;
     }
 
-    log_v("start_ssl with PSK");
-    int ret = start_ssl(sslclient, clientSocketHandle.get()->fd(), host, NULL, false, NULL, NULL, pskIdent, psKey, _use_insecure, _alpn_protos);
+    int ret = start_ssl(&_client_session->ctx, clientSocketHandle->fd(), host, _handshake_timeout, cfg);
     _lastError = ret;
     if (ret < 0) {
         log_e("start_ssl: %d", ret);
@@ -250,10 +218,10 @@ size_t WiFiClientSecure::write(const uint8_t *buf, size_t size)
         return 0;
     }
     int res;
-    if (sslclient)
-        res = send_ssl_data(sslclient, buf, size);
+    if (_client_session)
+        res = send_ssl_data(&_client_session->ctx, buf, size);
     else
-        res = send_ssl_data(_server_session.get()->get_ssl_context(), buf, size);
+        res = send_ssl_data(_server_session->get_ssl_context(), buf, size);
     if (res < 0) {
         stop();
         res = 0;
@@ -284,10 +252,10 @@ int WiFiClientSecure::read(uint8_t *buf, size_t size)
     }
     
     int res;
-    if (sslclient)
-        res = get_ssl_receive(sslclient, buf, size);
+    if (_client_session)
+        res = get_ssl_receive(&_client_session->ctx, buf, size);
     else
-        res = get_ssl_receive(_server_session.get()->get_ssl_context(), buf, size);
+        res = get_ssl_receive(_server_session->get_ssl_context(), buf, size);
     if (res < 0) {
         stop();
         return peeked?peeked:res;
@@ -302,10 +270,10 @@ int WiFiClientSecure::available()
         return peeked;
     }
     int res;
-    if (sslclient)
-        res = data_to_read(sslclient);
+    if (_client_session)
+        res = data_to_read(&_client_session->ctx);
     else
-        res = data_to_read(_server_session.get()->get_ssl_context());
+        res = data_to_read(_server_session->get_ssl_context());
     if (res < 0) {
         stop();
         return peeked?peeked:res;
@@ -323,17 +291,18 @@ uint8_t WiFiClientSecure::connected()
 
 void WiFiClientSecure::setInsecure()
 {
-    _CA_cert = NULL;
-    _cert = NULL;
-    _private_key = NULL;
-    _pskIdent = NULL;
-    _psKey = NULL;
-    _use_insecure = true;
+    _cfg.insecure = true;
+
+    _cfg.ca_cert = nullptr;
+    _cfg.cli_cert = nullptr;
+    _cfg.cli_key = nullptr;
+    _cfg.pskIdent = nullptr;
+    _cfg.psKey = nullptr;
 }
 
 void WiFiClientSecure::setCACert (const char *rootCA)
 {
-    _CA_cert = rootCA;
+    _cfg.ca_cert = rootCA;
 }
 
  void WiFiClientSecure::setCACertBundle(const uint8_t * bundle)
@@ -341,37 +310,55 @@ void WiFiClientSecure::setCACert (const char *rootCA)
     if (bundle != NULL)
     {
         esp_crt_bundle_set(bundle);
-        _use_ca_bundle = true;
+        _cfg.useRootCABundle = true;
+
+        _cfg.insecure = false;
+        _cfg.pskIdent = nullptr;
+        _cfg.psKey = nullptr;
     } else {
         esp_crt_bundle_detach(NULL);
-        _use_ca_bundle = false;
+        _cfg.useRootCABundle = false;
     }
  }
 
 void WiFiClientSecure::setCertificate (const char *client_ca)
 {
-    _cert = client_ca;
+    _cfg.ca_cert = client_ca;
+
+    _cfg.insecure = false;
+    _cfg.pskIdent = nullptr;
+    _cfg.psKey = nullptr;
 }
 
 void WiFiClientSecure::setPrivateKey (const char *private_key)
 {
-    _private_key = private_key;
+    _cfg.cli_key = private_key;
+
+    _cfg.insecure = false;
+    _cfg.pskIdent = nullptr;
+    _cfg.psKey = nullptr;
 }
 
 void WiFiClientSecure::setPreSharedKey(const char *pskIdent, const char *psKey) {
-    _pskIdent = pskIdent;
-    _psKey = psKey;
+    _cfg.pskIdent = pskIdent;
+    _cfg.psKey = psKey;
+
+    _cfg.insecure = false;
+    _cfg.ca_cert = nullptr;
+    _cfg.cli_cert = nullptr;
+    _cfg.cli_key = nullptr;
 }
 
 bool WiFiClientSecure::verify(const char* fp, const char* domain_name)
 {
-    // TODO: this condition seems redundant since "new" used to be called in all ctors, before introduction of the server, that is
-    if (!sslclient)
+    if (!_connected)
         return false;
 
-    return verify_ssl_fingerprint(sslclient, fp, domain_name);
+    return verify_ssl_fingerprint(&_client_session->ctx, fp, domain_name);
 }
 
+// TODO: discuss - this is BAD! this means we are mixing not-owned char* ptrs passed by e.g. setCertificate or connect,
+//  and self-allocated char* ptr from stream!
 char *WiFiClientSecure::_streamLoad(Stream& stream, size_t size) {
   char *dest = (char*)malloc(size+1);
   if (!dest) {
@@ -386,8 +373,9 @@ char *WiFiClientSecure::_streamLoad(Stream& stream, size_t size) {
   return dest;
 }
 
+// TODO: discuss - this is BAD! see above
 bool WiFiClientSecure::loadCACert(Stream& stream, size_t size) {
-  if (_CA_cert != NULL) free(const_cast<char*>(_CA_cert));
+  if (_cfg.ca_cert != NULL) free(const_cast<char*>(_cfg.ca_cert));
   char *dest = _streamLoad(stream, size);
   bool ret = false;
   if (dest) {
@@ -397,8 +385,9 @@ bool WiFiClientSecure::loadCACert(Stream& stream, size_t size) {
   return ret;
 }
 
+// TODO: discuss - this is BAD! see above
 bool WiFiClientSecure::loadCertificate(Stream& stream, size_t size) {
-  if (_cert != NULL) free(const_cast<char*>(_cert));
+  if (_cfg.cli_cert != NULL) free(const_cast<char*>(_cfg.cli_cert));
   char *dest = _streamLoad(stream, size);
   bool ret = false;
   if (dest) {
@@ -408,8 +397,9 @@ bool WiFiClientSecure::loadCertificate(Stream& stream, size_t size) {
   return ret;
 }
 
+// TODO: discuss - this is BAD! see above
 bool WiFiClientSecure::loadPrivateKey(Stream& stream, size_t size) {
-  if (_private_key != NULL) free(const_cast<char*>(_private_key));
+  if (_cfg.cli_key != NULL) free(const_cast<char*>(_cfg.cli_key));
   char *dest = _streamLoad(stream, size);
   bool ret = false;
   if (dest) {
@@ -430,13 +420,12 @@ int WiFiClientSecure::lastError(char *buf, const size_t size)
 
 void WiFiClientSecure::setHandshakeTimeout(unsigned long handshake_timeout)
 {
-    if (sslclient)
-        sslclient->handshake_timeout = handshake_timeout * 1000;
+    _handshake_timeout = handshake_timeout * 1000;
 }
 
 void WiFiClientSecure::setAlpnProtocols(const char **alpn_protos)
 {
-    _alpn_protos = alpn_protos;
+    _cfg.alpn_protos = alpn_protos;
 }
 int WiFiClientSecure::setTimeout(uint32_t seconds)
 {
@@ -455,3 +444,10 @@ int WiFiClientSecure::setTimeout(uint32_t seconds)
     }
 }
 
+const mbedtls_x509_crt* WiFiClientSecure::getPeerCertificate() {
+    return mbedtls_ssl_get_peer_cert(&_client_session->ctx.ssl_ctx); 
+};
+
+bool WiFiClientSecure::getFingerprintSHA256(uint8_t sha256_result[32]) {
+    return get_peer_fingerprint(&_client_session->ctx, sha256_result);
+};

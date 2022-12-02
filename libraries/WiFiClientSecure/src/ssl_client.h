@@ -24,15 +24,24 @@ typedef struct sslclient_context {
     mbedtls_x509_crt ca_cert;
     mbedtls_x509_crt client_cert;
     mbedtls_pk_context client_key;
-
-    unsigned long handshake_timeout;
 } sslclient_context;
+
+typedef struct sslclient_config {
+    const char *ca_cert;
+    bool useRootCABundle; 
+    const char *cli_cert;
+    const char *cli_key;
+    const char *pskIdent; // identity for PSK cipher suites
+    const char *psKey; // key in hex for PSK cipher suites
+    bool insecure; 
+    const char **alpn_protos;
+} sslclient_config;
 
 
 void ssl_init(sslclient_context *ssl_client);
 // return 0 = ok
-int start_ssl(sslclient_context *ssl_client, int socket, const char *host, const char *rootCABuff, bool useRootCABundle, const char *cli_cert, const char *cli_key, const char *pskIdent, const char *psKey, bool insecure, const char **alpn_protos);
-void stop_ssl(sslclient_context *ssl_client, const char *rootCABuff, const char *cli_cert, const char *cli_key);
+int start_ssl(sslclient_context *ssl_client, int socket, const char *host, ulong handshake_timeout, const sslclient_config& cfg);
+void stop_ssl(sslclient_context *ssl_client);
 int data_to_read(sslclient_context *ssl_client);
 int data_to_read(mbedtls_ssl_context *ssl_ctx);
 int send_ssl_data(sslclient_context *ssl_client, const uint8_t *data, size_t len);
