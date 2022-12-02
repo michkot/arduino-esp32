@@ -43,7 +43,7 @@ void WiFiClientSecure::setSocket(int socket)
 }
 
 WiFiClientSecure::WiFiClientSecure()
-    : WiFiClient{}
+  : WiFiClient{}
 {
     sslclient = new sslclient_context;
     ssl_init(sslclient);
@@ -62,6 +62,7 @@ WiFiClientSecure::WiFiClientSecure()
 
 
 WiFiClientSecure::WiFiClientSecure(int sock)
+  : WiFiClient{sock}
 {
     _connected = false;
     _timeout = 30000; // Same default as ssl_client
@@ -86,6 +87,7 @@ WiFiClientSecure::WiFiClientSecure(int sock)
 }
 
 WiFiClientSecure::WiFiClientSecure(std::unique_ptr<EspTlsServerSessionWrapper> server_session)
+  : WiFiClient{}
 {
     // _timeout and handshake_timeout are irrelevant
 
@@ -439,7 +441,7 @@ void WiFiClientSecure::setAlpnProtocols(const char **alpn_protos)
 int WiFiClientSecure::setTimeout(uint32_t seconds)
 {
     _timeout = seconds * 1000;
-    if (sslclient && sslclient->socket >= 0) {
+    if (fd() != -1) {
         struct timeval tv;
         tv.tv_sec = seconds;
         tv.tv_usec = 0;
@@ -452,21 +454,4 @@ int WiFiClientSecure::setTimeout(uint32_t seconds)
         return 0;
     }
 }
-int WiFiClientSecure::setSocketOption(int option, char* value, size_t len)
-{
-    return setSocketOption(SOL_SOCKET, option, (const void*)value, len);
-}
 
-int WiFiClientSecure::setSocketOption(int level, int option, const void* value, size_t len)
-{
-    int socket;
-    if (sslclient)
-        socket = sslclient->socket;
-    else
-        socket = _server_session.get()->get_socket();
-    int res = setsockopt(socket, level, option, value, len);
-    if(res < 0) {
-        log_e("fail on %d, errno: %d, \"%s\"", socket, errno, strerror(errno));
-    }
-    return res;
-}
