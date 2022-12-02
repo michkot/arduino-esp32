@@ -24,10 +24,23 @@
 #include <lwip/netdb.h>
 #include <errno.h>
 
+#include <WiFiSocketWrapper.h>
+
+#include <esp_debug_helpers.h>
+
 #undef connect
 #undef write
 #undef read
 
+void WiFiClientSecure::setSocket(int socket)
+{
+    // TODO: use shared_ptr for sslclient_context
+    // TODO: put cleanup logic in sslclient_context wrapper
+
+    // TODO: unref sslicnet context shared ptr
+    
+    clientSocketHandle = std::make_shared<WiFiSocketWrapper>(socket);
+}
 
 WiFiClientSecure::WiFiClientSecure()
 {
@@ -61,6 +74,7 @@ WiFiClientSecure::WiFiClientSecure(int sock)
     sslclient->handshake_timeout = 120000;
 
     if (sock >= 0) {
+        setSocket(sock);
         _connected = true;
     }
 
@@ -77,7 +91,14 @@ WiFiClientSecure::WiFiClientSecure(std::unique_ptr<EspTlsServerSessionWrapper> s
 {
     // _timeout and handshake_timeout are irrelevant
 
+    sslclient = nullptr;
+
     _server_session = std::move(server_session);
+
+    if (_server_session) {
+        setSocket(_server_session.get()->get_socket());
+        _connected = true;
+    }
 
     // copy paste from WiFiClientSecure::WiFiClientSecure(int sock)
     _CA_cert = NULL;
@@ -91,14 +112,17 @@ WiFiClientSecure::WiFiClientSecure(std::unique_ptr<EspTlsServerSessionWrapper> s
 
 WiFiClientSecure::~WiFiClientSecure()
 {
+    clientSocketHandle.reset();
     // release any WiFiServerSecure related connection
-    _server_session.reset(nullptr);
+    _server_session.reset();
     stop();
     delete sslclient;
 }
 
 WiFiClientSecure &WiFiClientSecure::operator=(const WiFiClientSecure &other)
 {
+    log_d("");
+    esp_backtrace_print(50);
     // TODO: this copy assignemnt operator seems super weird! :
     // - our sslclient is STOPPED (deallocating all TLS context resources)
     // - just socket is copied to our sslclient
@@ -121,12 +145,13 @@ void WiFiClientSecure::stop()
             _peek = -1;
         }
         stop_ssl_socket(sslclient, _CA_cert, _cert, _private_key);
+        // FIXME: callee does not do anything with the 2+ arguments!
     }
     // if stop() is being called from destructor, this has been already release
     if (_server_session) {
         // we are definitely NOT being called from destructor
         // there is no way to re-attach this client back to the originating server
-        _server_session.reset(nullptr);
+        _server_session.reset();
         // let's allocate standard sslclient as the ctor does now, to make it fully compatible with
         // "obtain client from local server" -> "stop it" -> "use the client to connect to remote server"
 

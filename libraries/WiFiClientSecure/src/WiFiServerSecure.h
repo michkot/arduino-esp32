@@ -12,8 +12,9 @@ private:
     std::unique_ptr<EspTlsCfgServerWrapper> cfgWrapped;
 
 public:
-    WiFiServerSecure(uint16_t port);
-    virtual ~WiFiServerSecure();
+    WiFiServerSecure(uint16_t port=443, uint8_t max_clients=1);
+    WiFiServerSecure(const IPAddress& addr, uint16_t port=443, uint8_t max_clients=1);
+    virtual ~WiFiServerSecure() override;
 
     // void begin(uint16_t port = 0);
     // void begin(uint16_t port, int reuse_enable);
