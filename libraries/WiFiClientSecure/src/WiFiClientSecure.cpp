@@ -217,6 +217,7 @@ int WiFiClientSecure::read()
 
 size_t WiFiClientSecure::write(const uint8_t *buf, size_t size)
 {
+    log_v("");
     if (!_connected) {
         return 0;
     }
@@ -225,7 +226,9 @@ size_t WiFiClientSecure::write(const uint8_t *buf, size_t size)
         res = send_ssl_data(&_client_session->ctx, buf, size);
     else
         res = send_ssl_data(_server_session->get_ssl_context(), buf, size);
+    log_v("");
     if (res < 0) {
+        log_v("");
         stop();
         res = 0;
     }
@@ -268,6 +271,7 @@ int WiFiClientSecure::read(uint8_t *buf, size_t size)
 
 int WiFiClientSecure::available()
 {
+    log_v("");
     int peeked = (_peek >= 0);
     if (!_connected) {
         return peeked;
@@ -286,6 +290,10 @@ int WiFiClientSecure::available()
 
 uint8_t WiFiClientSecure::connected()
 {
+    // TODO: discuss why do we attempt a read, do NOT do anything with the result, and then return the boolean flag?? 
+    //  do we assume that failed read will set _connected = false?
+    //  ... I guess yes ;)
+    log_v("");
     uint8_t dummy = 0;
     read(&dummy, 0);
 

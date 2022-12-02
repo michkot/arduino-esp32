@@ -355,6 +355,7 @@ bool WiFiClient::getNoDelay()
 
 size_t WiFiClient::write(uint8_t data)
 {
+    log_v("");
     return write(&data, 1);
 }
 
@@ -373,6 +374,7 @@ int WiFiClient::read()
 
 size_t WiFiClient::write(const uint8_t *buf, size_t size)
 {
+    log_v("");
     int res =0;
     int retry = WIFI_CLIENT_MAX_WRITE_RETRY;
     int socketFileDescriptor = fd();
@@ -429,11 +431,13 @@ size_t WiFiClient::write(const uint8_t *buf, size_t size)
 
 size_t WiFiClient::write_P(PGM_P buf, size_t size)
 {
+    log_v("");
     return write(buf, size);
 }
 
 size_t WiFiClient::write(Stream &stream)
 {
+    log_v("");
     uint8_t * buf = (uint8_t *)malloc(1360);
     if(!buf){
         return 0;
@@ -452,6 +456,7 @@ size_t WiFiClient::write(Stream &stream)
 
 int WiFiClient::read(uint8_t *buf, size_t size)
 {
+    log_v("");
     int res = -1;
     if (_rxBuffer) {
         res = _rxBuffer->read(buf, size);

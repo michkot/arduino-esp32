@@ -20,6 +20,8 @@
 #include "esp_crt_bundle.h"
 #include "WiFi.h"
 
+#include <esp_debug_helpers.h>
+
 #if !defined(MBEDTLS_KEY_EXCHANGE__SOME__PSK_ENABLED) && !defined(MBEDTLS_KEY_EXCHANGE_SOME_PSK_ENABLED)
 #  warning "Please call `idf.py menuconfig` then go to Component config -> mbedTLS -> TLS Key Exchange Methods -> Enable pre-shared-key ciphersuites and then check `Enable PSK based cyphersuite modes`. Save and Quit."
 #else
@@ -38,6 +40,7 @@ static int _handle_error(int err, const char * function, int line)
 #else
     log_e("[%s():%d]: code %d", function, line, err);
 #endif
+    esp_backtrace_print(50);
     return err;
 }
 
@@ -290,9 +293,11 @@ int data_to_read(sslclient_context *ssl_client)
 
 int data_to_read(mbedtls_ssl_context *ssl_ctx)
 {
+    log_v("");
     int ret, res;
     ret = mbedtls_ssl_read(ssl_ctx, NULL, 0);
     //log_e("RET: %i",ret);   //for low level debug
+    log_v("");
     res = mbedtls_ssl_get_bytes_avail(ssl_ctx);
     //log_e("RES: %i",res);    //for low level debug
     if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE && ret < 0) {
@@ -304,11 +309,13 @@ int data_to_read(mbedtls_ssl_context *ssl_ctx)
 
 int send_ssl_data(sslclient_context *ssl_client, const uint8_t *data, size_t len)
 {
+    log_v("");
     return send_ssl_data(&ssl_client->ssl_ctx, data, len);
 }
 
 int send_ssl_data(mbedtls_ssl_context *ssl_ctx, const uint8_t *data, size_t len)
 {
+    log_v("");
     log_v("Writing HTTP request with %d bytes...", len); //for low level debug
     int ret = -1;
 
@@ -331,12 +338,12 @@ int get_ssl_receive(sslclient_context *ssl_client, uint8_t *data, int length)
 
 int get_ssl_receive(mbedtls_ssl_context *ssl_ctx, uint8_t *data, int length)
 {
-    //log_d( "Reading HTTP response...");   //for low level debug
+    log_d( "Reading HTTP response...");   //for low level debug
     int ret = -1;
 
     ret = mbedtls_ssl_read(ssl_ctx, data, length);
 
-    //log_v( "%d bytes read", ret);   //for low level debug
+    log_v( "%d bytes read", ret);   //for low level debug
     return ret;
 }
 
