@@ -23,6 +23,8 @@
 #include <lwip/netdb.h>
 #include <errno.h>
 
+#include "WiFiSocketWrapper.h"
+
 #include <esp_debug_helpers.h>
 
 #define WIFI_CLIENT_DEF_CONN_TIMEOUT_MS  (3000)
@@ -157,33 +159,13 @@ public:
     }
 };
 
-class WiFiClientSocketHandle {
-private:
-    int sockfd;
-
-public:
-    WiFiClientSocketHandle(int fd):sockfd(fd)
-    {
-    }
-
-    ~WiFiClientSocketHandle()
-    {
-        close(sockfd);
-    }
-
-    int fd()
-    {
-        return sockfd;
-    }
-};
-
 WiFiClient::WiFiClient():_connected(false),_timeout(WIFI_CLIENT_DEF_CONN_TIMEOUT_MS),next(NULL)
 {
 }
 
 WiFiClient::WiFiClient(int fd):_connected(true),_timeout(WIFI_CLIENT_DEF_CONN_TIMEOUT_MS),next(NULL)
 {
-    clientSocketHandle.reset(new WiFiClientSocketHandle(fd));
+    clientSocketHandle = std::make_shared<WiFiSocketWrapper>(fd);
     _rxBuffer.reset(new WiFiClientRxBuffer(fd));
 }
 
@@ -215,6 +197,11 @@ int WiFiClient::connect(IPAddress ip, uint16_t port)
 int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
 {
     _timeout = timeout;
+    
+    log_v("Starting socket");
+
+    // FIXME: use IPPROTO_TCP instead of 0 ? - it was used in ssl_client of WiFiClientSecure
+    // FIXME: socket() or lwip_socket() ??
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         log_e("socket: %d", errno);
@@ -282,7 +269,7 @@ int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
     //ROE_WIFICLIENT (setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable)),"SO_KEEPALIVE");
 
     fcntl( sockfd, F_SETFL, fcntl( sockfd, F_GETFL, 0 ) & (~O_NONBLOCK) );
-    clientSocketHandle.reset(new WiFiClientSocketHandle(sockfd));
+    clientSocketHandle = std::make_shared<WiFiSocketWrapper>(sockfd);
     _rxBuffer.reset(new WiFiClientRxBuffer(sockfd));
 
     _connected = true;
@@ -313,7 +300,6 @@ int WiFiClient::setSocketOption(int level, int option, const void* value, size_t
     int res = setsockopt(fd(), level, option, value, len);
     if(res < 0) {
         log_e("fail on %d, errno: %d, \"%s\"", fd(), errno, strerror(errno));
-        esp_backtrace_print(50);
     }
     return res;
 }
@@ -347,7 +333,6 @@ int WiFiClient::getOption(int option, int *value)
     int res = getsockopt(fd(), IPPROTO_TCP, option, (char *)value, &size);
     if(res < 0) {
         log_e("fail on fd %d, errno: %d, \"%s\"", fd(), errno, strerror(errno));
-        esp_backtrace_print(50);
     }
     return res;
 }
@@ -561,7 +546,7 @@ uint8_t WiFiClient::connected()
     return _connected;
 }
 
-IPAddress WiFiClient::remoteIP(int fd) const
+IPAddress WiFiClient::remoteIP(int fd)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof addr;
@@ -570,7 +555,7 @@ IPAddress WiFiClient::remoteIP(int fd) const
     return IPAddress((uint32_t)(s->sin_addr.s_addr));
 }
 
-uint16_t WiFiClient::remotePort(int fd) const
+uint16_t WiFiClient::remotePort(int fd)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof addr;
@@ -589,7 +574,7 @@ uint16_t WiFiClient::remotePort() const
     return remotePort(fd());
 }
 
-IPAddress WiFiClient::localIP(int fd) const
+IPAddress WiFiClient::localIP(int fd)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof addr;
@@ -598,7 +583,7 @@ IPAddress WiFiClient::localIP(int fd) const
     return IPAddress((uint32_t)(s->sin_addr.s_addr));
 }
 
-uint16_t WiFiClient::localPort(int fd) const
+uint16_t WiFiClient::localPort(int fd)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof addr;
@@ -624,7 +609,9 @@ bool WiFiClient::operator==(const WiFiClient& rhs)
 
 int WiFiClient::fd() const
 {
-    if (clientSocketHandle == NULL) {
+    if (clientSocketHandle == nullptr) {
+        log_e("fd() called, but clientSocketHandle is NULL");
+        esp_backtrace_print(5);
         return -1;
     } else {
         return clientSocketHandle->fd();
