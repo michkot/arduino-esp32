@@ -48,6 +48,7 @@ void ssl_init(sslclient_context *ssl_client)
 {
     // reset embedded pointers to zero
     memset(ssl_client, 0, sizeof(sslclient_context));
+    mbedtls_net_init(&ssl_client->net_ctx);
     mbedtls_ssl_init(&ssl_client->ssl_ctx);
     mbedtls_ssl_config_init(&ssl_client->ssl_conf);
     mbedtls_ctr_drbg_init(&ssl_client->drbg_ctx);
@@ -205,8 +206,8 @@ int start_ssl(sslclient_context *ssl_client, int socket, const char *host, unsig
         return handle_error(ret);
     }
 
-    ssl_client->socket = socket;
-    mbedtls_ssl_set_bio(&ssl_client->ssl_ctx, &ssl_client->socket, mbedtls_net_send, mbedtls_net_recv, NULL );
+    ssl_client->net_ctx.fd = socket;
+    mbedtls_ssl_set_bio(&ssl_client->ssl_ctx, &ssl_client->net_ctx, mbedtls_net_send, mbedtls_net_recv, NULL );
 
     log_v("Performing the SSL/TLS handshake...");
     unsigned long handshake_start_time=millis();
@@ -278,7 +279,7 @@ void stop_ssl(sslclient_context *ssl_client)
     //// // reset embedded pointers to zero
     //// memset(ssl_client, 0, sizeof(sslclient_context));
 
-    ssl_client->socket = -1;
+    ssl_client->net_ctx.fd = -1;
 }
 
 

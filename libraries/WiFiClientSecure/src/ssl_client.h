@@ -13,8 +13,9 @@
 #include "mbedtls/error.h"
 
 typedef struct sslclient_context {
-    // we need to grab a refernce to this for mbedtls_ssl_set_bio()
-    int socket;
+    // we need to grab a refernce to this for mbedtls_ssl_set_bio(), which provides it to mbedtls_net_* callbacks
+    mbedtls_net_context net_ctx;
+    
     mbedtls_ssl_context ssl_ctx;
     mbedtls_ssl_config ssl_conf;
 
