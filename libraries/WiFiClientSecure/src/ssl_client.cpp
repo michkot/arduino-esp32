@@ -20,6 +20,8 @@
 #include "esp_crt_bundle.h"
 #include "WiFi.h"
 
+#include <esp_debug_helpers.h>
+
 #if !defined(MBEDTLS_KEY_EXCHANGE__SOME__PSK_ENABLED) && !defined(MBEDTLS_KEY_EXCHANGE_SOME_PSK_ENABLED)
 #  warning "Please call `idf.py menuconfig` then go to Component config -> mbedTLS -> TLS Key Exchange Methods -> Enable pre-shared-key ciphersuites and then check `Enable PSK based cyphersuite modes`. Save and Quit."
 #else
@@ -38,6 +40,7 @@ static int _handle_error(int err, const char * function, int line)
 #else
     log_e("[%s():%d]: code %d", function, line, err);
 #endif
+    esp_backtrace_print(50);
     return err;
 }
 
@@ -48,104 +51,38 @@ void ssl_init(sslclient_context *ssl_client)
 {
     // reset embedded pointers to zero
     memset(ssl_client, 0, sizeof(sslclient_context));
+    mbedtls_net_init(&ssl_client->net_ctx);
     mbedtls_ssl_init(&ssl_client->ssl_ctx);
     mbedtls_ssl_config_init(&ssl_client->ssl_conf);
     mbedtls_ctr_drbg_init(&ssl_client->drbg_ctx);
 }
 
-
-int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t port, int timeout, const char *rootCABuff, bool useRootCABundle, const char *cli_cert, const char *cli_key, const char *pskIdent, const char *psKey, bool insecure, const char **alpn_protos)
+// return 0 = ok
+int start_ssl(sslclient_context *ssl_client, int socket, const char *host, unsigned long handshake_timeout, const sslclient_config& cfg)
 {
     char buf[512];
     int ret, flags;
     int enable = 1;
     log_v("Free internal heap before TLS %u", ESP.getFreeHeap());
 
-    if (rootCABuff == NULL && pskIdent == NULL && psKey == NULL && !insecure && !useRootCABundle) {
-        return -1;
-    }
-
-    log_v("Starting socket");
-    ssl_client->socket = -1;
-
-    ssl_client->socket = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (ssl_client->socket < 0) {
-        log_e("ERROR opening socket");
-        return ssl_client->socket;
-    }
-
-    IPAddress srv((uint32_t)0);
-    if(!WiFiGenericClass::hostByName(host, srv)){
-        return -1;
-    }
-
-    fcntl( ssl_client->socket, F_SETFL, fcntl( ssl_client->socket, F_GETFL, 0 ) | O_NONBLOCK );
-    struct sockaddr_in serv_addr;
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = srv;
-    serv_addr.sin_port = htons(port);
-
-    if(timeout <= 0){
-        timeout = 30000; // Milli seconds.
-    }
-
-    fd_set fdset;
-    struct timeval tv;
-    FD_ZERO(&fdset);
-    FD_SET(ssl_client->socket, &fdset);
-    tv.tv_sec = timeout / 1000;
-    tv.tv_usec = (timeout % 1000) * 1000;
-
-    int res = lwip_connect(ssl_client->socket, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
-    if (res < 0 && errno != EINPROGRESS) {
-        log_e("connect on fd %d, errno: %d, \"%s\"", ssl_client->socket, errno, strerror(errno));
-        lwip_close(ssl_client->socket);
-        ssl_client->socket = -1;
-        return -1;
-    }
-
-    res = select(ssl_client->socket + 1, nullptr, &fdset, nullptr, timeout<0 ? nullptr : &tv);
-    if (res < 0) {
-        log_e("select on fd %d, errno: %d, \"%s\"", ssl_client->socket, errno, strerror(errno));
-        lwip_close(ssl_client->socket);
-        ssl_client->socket = -1;
-        return -1;
-    } else if (res == 0) {
-        log_i("select returned due to timeout %d ms for fd %d", timeout, ssl_client->socket);
-        lwip_close(ssl_client->socket);
-        ssl_client->socket = -1;
-        return -1;
-    } else {
-        int sockerr;
-        socklen_t len = (socklen_t)sizeof(int);
-        res = getsockopt(ssl_client->socket, SOL_SOCKET, SO_ERROR, &sockerr, &len);
-
-        if (res < 0) {
-            log_e("getsockopt on fd %d, errno: %d, \"%s\"", ssl_client->socket, errno, strerror(errno));
-            lwip_close(ssl_client->socket);
-            ssl_client->socket = -1;
-            return -1;
-        }
-
-        if (sockerr != 0) {
-            log_e("socket error on fd %d, errno: %d, \"%s\"", ssl_client->socket, sockerr, strerror(sockerr));
-            lwip_close(ssl_client->socket);
-            ssl_client->socket = -1;
+    {
+        int ctr = 0;
+        ctr += cfg.insecure == true;
+        ctr += cfg.useRootCABundle == true;
+        ctr += cfg.ca_cert != NULL;
+        ctr += cfg.pskIdent != NULL || cfg.psKey;
+        if (ctr != 1)
+        {   
+            log_e("exactly one server-verification method is allowed");
             return -1;
         }
     }
 
-
-#define ROE(x,msg) { if (((x)<0)) { log_e("LWIP Socket config of " msg " failed."); return -1; }}
-     ROE(lwip_setsockopt(ssl_client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),"SO_RCVTIMEO");
-     ROE(lwip_setsockopt(ssl_client->socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)),"SO_SNDTIMEO");
-
-     ROE(lwip_setsockopt(ssl_client->socket, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)),"TCP_NODELAY");
-     ROE(lwip_setsockopt(ssl_client->socket, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable)),"SO_KEEPALIVE");
-
-
-
+    if ((cfg.cli_cert != NULL) != (cfg.cli_key != NULL)) {
+        log_e("client authentication is set-up only half-way");
+        return -1;
+    }
+    
     log_v("Seeding the random number generator");
     mbedtls_entropy_init(&ssl_client->entropy_ctx);
 
@@ -164,9 +101,9 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
         return handle_error(ret);
     }
 
-    if (alpn_protos != NULL) {
+    if (cfg.alpn_protos != NULL) {
         log_v("Setting ALPN protocols");
-        if ((ret = mbedtls_ssl_conf_alpn_protocols(&ssl_client->ssl_conf, alpn_protos) ) != 0) {
+        if ((ret = mbedtls_ssl_conf_alpn_protocols(&ssl_client->ssl_conf, cfg.alpn_protos) ) != 0) {
             return handle_error(ret);
         }
     }
@@ -174,10 +111,11 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
     // MBEDTLS_SSL_VERIFY_REQUIRED if a CA certificate is defined on Arduino IDE and
     // MBEDTLS_SSL_VERIFY_NONE if not.
 
-    if (insecure) {
+    if (cfg.insecure) {
         mbedtls_ssl_conf_authmode(&ssl_client->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
         log_d("WARNING: Skipping SSL Verification. INSECURE!");
-    } else if (rootCABuff != NULL) {
+    } else if (cfg.ca_cert != NULL) {
+        auto& rootCABuff = cfg.ca_cert;
         log_v("Loading CA cert");
         mbedtls_x509_crt_init(&ssl_client->ca_cert);
         mbedtls_ssl_conf_authmode(&ssl_client->ssl_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
@@ -189,14 +127,16 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
             mbedtls_x509_crt_free(&ssl_client->ca_cert);
             return handle_error(ret);
         }
-    } else if (useRootCABundle) {
+    } else if (cfg.useRootCABundle) {
         log_v("Attaching root CA cert bundle");
         ret = esp_crt_bundle_attach(&ssl_client->ssl_conf);
 
         if (ret < 0) {
             return handle_error(ret);
         }
-    } else if (pskIdent != NULL && psKey != NULL) {
+    } else if (cfg.pskIdent != NULL && cfg.psKey != NULL) {
+        auto& pskIdent = cfg.pskIdent;
+        auto& psKey = cfg.psKey;
         log_v("Setting up PSK");
         // convert PSK from hex to binary
         if ((strlen(psKey) & 1) != 0 || strlen(psKey) > 2*MBEDTLS_PSK_MAX_LEN) {
@@ -230,7 +170,9 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
         return -1;
     }
 
-    if (!insecure && cli_cert != NULL && cli_key != NULL) {
+    if (!cfg.insecure && cfg.cli_cert != NULL && cfg.cli_key != NULL) {
+        auto& cli_cert = cfg.cli_cert;
+        auto& cli_key = cfg.cli_key;
         mbedtls_x509_crt_init(&ssl_client->client_cert);
         mbedtls_pk_init(&ssl_client->client_key);
 
@@ -267,7 +209,8 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
         return handle_error(ret);
     }
 
-    mbedtls_ssl_set_bio(&ssl_client->ssl_ctx, &ssl_client->socket, mbedtls_net_send, mbedtls_net_recv, NULL );
+    ssl_client->net_ctx.fd = socket;
+    mbedtls_ssl_set_bio(&ssl_client->ssl_ctx, &ssl_client->net_ctx, mbedtls_net_send, mbedtls_net_recv, NULL );
 
     log_v("Performing the SSL/TLS handshake...");
     unsigned long handshake_start_time=millis();
@@ -275,13 +218,13 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
             return handle_error(ret);
         }
-        if((millis()-handshake_start_time)>ssl_client->handshake_timeout)
+        if((millis()-handshake_start_time)>handshake_timeout)
             return -1;
         vTaskDelay(2);//2 ticks
     }
 
 
-    if (cli_cert != NULL && cli_key != NULL) {
+    if (cfg.cli_cert != NULL && cfg.cli_key != NULL) {
         log_d("Protocol is %s Ciphersuite is %s", mbedtls_ssl_get_version(&ssl_client->ssl_ctx), mbedtls_ssl_get_ciphersuite(&ssl_client->ssl_ctx));
         if ((ret = mbedtls_ssl_get_record_expansion(&ssl_client->ssl_ctx)) >= 0) {
             log_d("Record expansion is %d", ret);
@@ -301,32 +244,26 @@ int start_ssl_client(sslclient_context *ssl_client, const char *host, uint32_t p
         log_v("Certificate verified.");
     }
     
-    if (rootCABuff != NULL) {
+    if (cfg.ca_cert != NULL) {
         mbedtls_x509_crt_free(&ssl_client->ca_cert);
     }
 
-    if (cli_cert != NULL) {
+    if (cfg.cli_cert != NULL) {
         mbedtls_x509_crt_free(&ssl_client->client_cert);
     }
 
-    if (cli_key != NULL) {
+    if (cfg.cli_key != NULL) {
         mbedtls_pk_free(&ssl_client->client_key);
-    }    
+    }
 
     log_v("Free internal heap after TLS %u", ESP.getFreeHeap());
 
-    return ssl_client->socket;
+    return 0;
 }
 
-
-void stop_ssl_socket(sslclient_context *ssl_client, const char *rootCABuff, const char *cli_cert, const char *cli_key)
+void stop_ssl(sslclient_context *ssl_client)
 {
     log_v("Cleaning SSL connection.");
-
-    if (ssl_client->socket >= 0) {
-        lwip_close(ssl_client->socket);
-        ssl_client->socket = -1;
-    }
 
     // avoid memory leak if ssl connection attempt failed
     if (ssl_client->ssl_conf.ca_chain != NULL) {
@@ -341,21 +278,27 @@ void stop_ssl_socket(sslclient_context *ssl_client, const char *rootCABuff, cons
     mbedtls_ctr_drbg_free(&ssl_client->drbg_ctx);
     mbedtls_entropy_free(&ssl_client->entropy_ctx);
     
-    // save only interesting field
-    int timeout = ssl_client->handshake_timeout;
-    // reset embedded pointers to zero
-    memset(ssl_client, 0, sizeof(sslclient_context));
-    
-    ssl_client->handshake_timeout = timeout;
+    // TODO: discuss -  I think is is not needed after all the frees
+    //// // reset embedded pointers to zero
+    //// memset(ssl_client, 0, sizeof(sslclient_context));
+
+    ssl_client->net_ctx.fd = -1;
 }
 
 
 int data_to_read(sslclient_context *ssl_client)
 {
+    return data_to_read(&ssl_client->ssl_ctx);
+}
+
+int data_to_read(mbedtls_ssl_context *ssl_ctx)
+{
+    log_v("");
     int ret, res;
-    ret = mbedtls_ssl_read(&ssl_client->ssl_ctx, NULL, 0);
+    ret = mbedtls_ssl_read(ssl_ctx, NULL, 0);
     //log_e("RET: %i",ret);   //for low level debug
-    res = mbedtls_ssl_get_bytes_avail(&ssl_client->ssl_ctx);
+    log_v("");
+    res = mbedtls_ssl_get_bytes_avail(ssl_ctx);
     //log_e("RES: %i",res);    //for low level debug
     if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE && ret < 0) {
         return handle_error(ret);
@@ -366,10 +309,17 @@ int data_to_read(sslclient_context *ssl_client)
 
 int send_ssl_data(sslclient_context *ssl_client, const uint8_t *data, size_t len)
 {
+    log_v("");
+    return send_ssl_data(&ssl_client->ssl_ctx, data, len);
+}
+
+int send_ssl_data(mbedtls_ssl_context *ssl_ctx, const uint8_t *data, size_t len)
+{
+    log_v("");
     log_v("Writing HTTP request with %d bytes...", len); //for low level debug
     int ret = -1;
 
-    while ((ret = mbedtls_ssl_write(&ssl_client->ssl_ctx, data, len)) <= 0) {
+    while ((ret = mbedtls_ssl_write(ssl_ctx, data, len)) <= 0) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE && ret < 0) {
             log_v("Handling error %d", ret); //for low level debug
             return handle_error(ret);
@@ -383,12 +333,17 @@ int send_ssl_data(sslclient_context *ssl_client, const uint8_t *data, size_t len
 
 int get_ssl_receive(sslclient_context *ssl_client, uint8_t *data, int length)
 {
-    //log_d( "Reading HTTP response...");   //for low level debug
+    return get_ssl_receive(&ssl_client->ssl_ctx, data, length);
+}
+
+int get_ssl_receive(mbedtls_ssl_context *ssl_ctx, uint8_t *data, int length)
+{
+    log_d( "Reading HTTP response...");   //for low level debug
     int ret = -1;
 
-    ret = mbedtls_ssl_read(&ssl_client->ssl_ctx, data, length);
+    ret = mbedtls_ssl_read(ssl_ctx, data, length);
 
-    //log_v( "%d bytes read", ret);   //for low level debug
+    log_v( "%d bytes read", ret);   //for low level debug
     return ret;
 }
 

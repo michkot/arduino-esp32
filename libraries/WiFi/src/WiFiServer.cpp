@@ -39,23 +39,12 @@ size_t WiFiServer::write(const uint8_t *data, size_t len){
 void WiFiServer::stopAll(){}
 
 WiFiClient WiFiServer::available(){
-  if(!_listening)
-    return WiFiClient();
-  int client_sock;
-  if (_accepted_sockfd >= 0) {
-    client_sock = _accepted_sockfd;
+  if (! _accepted_sockfd >= 0) {
+    hasClient();
+  }
+  if(_accepted_sockfd >= 0){
+    int client_sock = _accepted_sockfd;
     _accepted_sockfd = -1;
-  }
-  else {
-  struct sockaddr_in _client;
-  int cs = sizeof(struct sockaddr_in);
-#ifdef ESP_IDF_VERSION_MAJOR
-    client_sock = lwip_accept(sockfd, (struct sockaddr *)&_client, (socklen_t*)&cs);
-#else
-    client_sock = lwip_accept_r(sockfd, (struct sockaddr *)&_client, (socklen_t*)&cs);
-#endif
-  }
-  if(client_sock >= 0){
     int val = 1;
     if(setsockopt(client_sock, SOL_SOCKET, SO_KEEPALIVE, (char*)&val, sizeof(int)) == ESP_OK) {
       val = _noDelay;
@@ -64,6 +53,20 @@ WiFiClient WiFiServer::available(){
     }
   }
   return WiFiClient();
+}
+
+// Discards a client if there's an available connection waiting.  If one is discareded,
+// returns its remote IP and TCP port.
+std::tuple<IPAddress, uint16_t> WiFiServer::discardAvailable() {
+  if (!hasClient()) return {};
+  /* we know _accepted_sockfd is set, lwip_accept has been called */
+  
+  auto ip = WiFiClient::remoteIP(_accepted_sockfd);
+  auto port = WiFiClient::remotePort(_accepted_sockfd);
+
+  lwip_close(_accepted_sockfd);
+  
+  return std::make_tuple(std::move(ip), std::move(port));
 }
 
 void WiFiServer::begin(uint16_t port){
@@ -106,6 +109,9 @@ bool WiFiServer::hasClient() {
     if (_accepted_sockfd >= 0) {
       return true;
     }
+    if (!_listening) {
+      return false;
+    }
     struct sockaddr_in _client;
     int cs = sizeof(struct sockaddr_in);
 #ifdef ESP_IDF_VERSION_MAJOR
@@ -120,6 +126,9 @@ bool WiFiServer::hasClient() {
 }
 
 void WiFiServer::end(){
+  if (_accepted_sockfd >= 0)
+    lwip_close(_accepted_sockfd);
+
 #ifdef ESP_IDF_VERSION_MAJOR
   lwip_close(sockfd);
 #else

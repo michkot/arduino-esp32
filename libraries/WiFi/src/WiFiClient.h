@@ -25,7 +25,7 @@
 #include "Client.h"
 #include <memory>
 
-class WiFiClientSocketHandle;
+class WiFiSocketWrapper;
 class WiFiClientRxBuffer;
 
 class ESPLwIPClient : public Client
@@ -39,7 +39,7 @@ public:
 class WiFiClient : public ESPLwIPClient
 {
 protected:
-    std::shared_ptr<WiFiClientSocketHandle> clientSocketHandle;
+    std::shared_ptr<WiFiSocketWrapper> clientSocketHandle;
     std::shared_ptr<WiFiClientRxBuffer> _rxBuffer;
     bool _connected;
     int _timeout;
@@ -49,9 +49,13 @@ public:
     WiFiClient();
     WiFiClient(int fd);
     ~WiFiClient();
+    // returns boolean indicating success
     int connect(IPAddress ip, uint16_t port);
+    // returns boolean indicating success
     int connect(IPAddress ip, uint16_t port, int32_t timeout);
+    // returns boolean indicating success
     int connect(const char *host, uint16_t port);
+    // returns boolean indicating success
     int connect(const char *host, uint16_t port, int32_t timeout);
     size_t write(uint8_t data);
     size_t write(const uint8_t *buf, size_t size);
@@ -95,13 +99,13 @@ public:
     bool getNoDelay();
 
     IPAddress remoteIP() const;
-    IPAddress remoteIP(int fd) const;
+    static IPAddress remoteIP(int fd);
     uint16_t remotePort() const;
-    uint16_t remotePort(int fd) const;
+    static uint16_t remotePort(int fd);
     IPAddress localIP() const;
-    IPAddress localIP(int fd) const;
+    static IPAddress localIP(int fd);
     uint16_t localPort() const;
-    uint16_t localPort(int fd) const;
+    static uint16_t localPort(int fd);
 
     //friend class WiFiServer;
     using Print::write;

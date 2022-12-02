@@ -25,22 +25,24 @@
 #include <WiFi.h>
 #include "ssl_client.h"
 
+#include "EspTlsWrappers.h"
+
+class TlsSessionWrapper;
+
 class WiFiClientSecure : public WiFiClient
 {
+friend class WiFiServerSecure;
 protected:
-    sslclient_context *sslclient;
- 
+    std::shared_ptr<TlsSessionWrapper> _client_session;
+    std::shared_ptr<EspTlsServerSessionWrapper> _server_session;
+
     int _lastError = 0;
     int _peek = -1;
-    int _timeout;
-    bool _use_insecure;
-    const char *_CA_cert;
-    const char *_cert;
-    const char *_private_key;
-    const char *_pskIdent; // identity for PSK cipher suites
-    const char *_psKey; // key in hex for PSK cipher suites
-    const char **_alpn_protos;
-    bool _use_ca_bundle;
+    // in ms
+    unsigned long _handshake_timeout = 120000;
+    sslclient_config _cfg = {0};
+
+    WiFiClientSecure(const std::shared_ptr<EspTlsServerSessionWrapper>& server_session);
 
 public:
     WiFiClientSecure *next;
@@ -51,13 +53,16 @@ public:
     int connect(IPAddress ip, uint16_t port, int32_t timeout);
     int connect(const char *host, uint16_t port);
     int connect(const char *host, uint16_t port, int32_t timeout);
-    int connect(IPAddress ip, uint16_t port, const char *rootCABuff, const char *cli_cert, const char *cli_key);
-    int connect(const char *host, uint16_t port, const char *rootCABuff, const char *cli_cert, const char *cli_key);
+    int connect(IPAddress ip, uint16_t port, const char *ca_cert, const char *cli_cert, const char *cli_key);
+    int connect(const char *host, uint16_t port, const char *ca_cert, const char *cli_cert, const char *cli_key);
     int connect(IPAddress ip, uint16_t port, const char *pskIdent, const char *psKey);
     int connect(const char *host, uint16_t port, const char *pskIdent, const char *psKey);
     int peek();
+    //moved from private:
+    using Print::write;
     size_t write(uint8_t data);
-    size_t write(const uint8_t *buf, size_t size);
+    // changed to virtual
+    virtual size_t write(const uint8_t *buf, size_t size) override;
     int available();
     int read();
     int read(uint8_t *buf, size_t size);
@@ -71,17 +76,16 @@ public:
     void setCertificate(const char *client_ca);
     void setPrivateKey (const char *private_key);
     bool loadCACert(Stream& stream, size_t size);
+    // WARN: changes global setting!!!
     void setCACertBundle(const uint8_t * bundle);
     bool loadCertificate(Stream& stream, size_t size);
     bool loadPrivateKey(Stream& stream, size_t size);
     bool verify(const char* fingerprint, const char* domain_name);
-    void setHandshakeTimeout(unsigned long handshake_timeout);
+    void setHandshakeTimeout(unsigned long seconds);
     void setAlpnProtocols(const char **alpn_protos);
-    const mbedtls_x509_crt* getPeerCertificate() { return mbedtls_ssl_get_peer_cert(&sslclient->ssl_ctx); };
-    bool getFingerprintSHA256(uint8_t sha256_result[32]) { return get_peer_fingerprint(sslclient, sha256_result); };
+    const mbedtls_x509_crt* getPeerCertificate();
+    bool getFingerprintSHA256(uint8_t sha256_result[32]);
     int setTimeout(uint32_t seconds);
-    int setSocketOption(int option, char* value, size_t len);
-    int setSocketOption(int level, int option, const void* value, size_t len);
 
     operator bool()
     {
@@ -102,16 +106,16 @@ public:
         return !this->operator==(rhs);
     };
 
-    int socket()
-    {
-        return sslclient->socket = -1;
-    }
-
 private:
     char *_streamLoad(Stream& stream, size_t size);
 
     //friend class WiFiServer;
-    using Print::write;
+    //using Print::write;
+
+    // takes ownership of the socket
+    void setSocket(int socket);
+
+    int _connect(const char *host, uint16_t port, const sslclient_config& cfg);
 };
 
 #endif /* _WIFICLIENT_H_ */

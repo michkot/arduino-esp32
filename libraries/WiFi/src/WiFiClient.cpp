@@ -23,6 +23,10 @@
 #include <lwip/netdb.h>
 #include <errno.h>
 
+#include "WiFiSocketWrapper.h"
+
+#include <esp_debug_helpers.h>
+
 #define WIFI_CLIENT_DEF_CONN_TIMEOUT_MS  (3000)
 #define WIFI_CLIENT_MAX_WRITE_RETRY      (10)
 #define WIFI_CLIENT_SELECT_TIMEOUT_US    (1000000)
@@ -155,34 +159,14 @@ public:
     }
 };
 
-class WiFiClientSocketHandle {
-private:
-    int sockfd;
-
-public:
-    WiFiClientSocketHandle(int fd):sockfd(fd)
-    {
-    }
-
-    ~WiFiClientSocketHandle()
-    {
-        close(sockfd);
-    }
-
-    int fd()
-    {
-        return sockfd;
-    }
-};
-
 WiFiClient::WiFiClient():_connected(false),_timeout(WIFI_CLIENT_DEF_CONN_TIMEOUT_MS),next(NULL)
 {
 }
 
 WiFiClient::WiFiClient(int fd):_connected(true),_timeout(WIFI_CLIENT_DEF_CONN_TIMEOUT_MS),next(NULL)
 {
-    clientSocketHandle.reset(new WiFiClientSocketHandle(fd));
-    _rxBuffer.reset(new WiFiClientRxBuffer(fd));
+    clientSocketHandle = std::make_shared<WiFiSocketWrapper>(fd);
+    _rxBuffer = std::make_shared<WiFiClientRxBuffer>(fd);
 }
 
 WiFiClient::~WiFiClient()
@@ -201,7 +185,7 @@ WiFiClient & WiFiClient::operator=(const WiFiClient &other)
 
 void WiFiClient::stop()
 {
-    clientSocketHandle = NULL;
+    clientSocketHandle.reset();
     _rxBuffer = NULL;
     _connected = false;
 }
@@ -212,7 +196,10 @@ int WiFiClient::connect(IPAddress ip, uint16_t port)
 }
 int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
 {
-    _timeout = timeout;
+    log_v("Starting socket");
+
+    // FIXME: use IPPROTO_TCP instead of 0 ? - it was used in ssl_client of WiFiClientSecure
+    // FIXME: socket() or lwip_socket() ??
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         log_e("socket: %d", errno);
@@ -230,7 +217,7 @@ int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
     struct timeval tv;
     FD_ZERO(&fdset);
     FD_SET(sockfd, &fdset);
-    tv.tv_sec = _timeout / 1000;
+    tv.tv_sec = timeout / 1000;
     tv.tv_usec = 0;
 
 #ifdef ESP_IDF_VERSION_MAJOR
@@ -244,13 +231,13 @@ int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
         return 0;
     }
 
-    res = select(sockfd + 1, nullptr, &fdset, nullptr, _timeout<0 ? nullptr : &tv);
+    res = select(sockfd + 1, nullptr, &fdset, nullptr, timeout<0 ? nullptr : &tv);
     if (res < 0) {
         log_e("select on fd %d, errno: %d, \"%s\"", sockfd, errno, strerror(errno));
         close(sockfd);
         return 0;
     } else if (res == 0) {
-        log_i("select returned due to timeout %d ms for fd %d", _timeout, sockfd);
+        log_i("select returned due to timeout %d ms for fd %d", timeout, sockfd);
         close(sockfd);
         return 0;
     } else {
@@ -275,15 +262,20 @@ int WiFiClient::connect(IPAddress ip, uint16_t port, int32_t timeout)
     ROE_WIFICLIENT(setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)),"SO_SNDTIMEO");
     ROE_WIFICLIENT(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),"SO_RCVTIMEO");
 
-    // These are also set in WiFiClientSecure, should be set here too?
+    // These used to be set in WiFiClientSecure, should be set here (now)?
     //ROE_WIFICLIENT(setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)),"TCP_NODELAY"); 
     //ROE_WIFICLIENT (setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable)),"SO_KEEPALIVE");
 
     fcntl( sockfd, F_SETFL, fcntl( sockfd, F_GETFL, 0 ) & (~O_NONBLOCK) );
-    clientSocketHandle.reset(new WiFiClientSocketHandle(sockfd));
-    _rxBuffer.reset(new WiFiClientRxBuffer(sockfd));
 
+    // if we got here, new socket was successfully open and we will release our share of the old one
+    clientSocketHandle = std::make_shared<WiFiSocketWrapper>(sockfd);
+    _rxBuffer = std::make_shared<WiFiClientRxBuffer>(sockfd);
     _connected = true;
+    // TODO: was this really intentional? 
+    // changing "default" timeout of this Client instance
+    _timeout = timeout;
+
     return 1;
 }
 
@@ -363,6 +355,7 @@ bool WiFiClient::getNoDelay()
 
 size_t WiFiClient::write(uint8_t data)
 {
+    log_v("");
     return write(&data, 1);
 }
 
@@ -381,6 +374,7 @@ int WiFiClient::read()
 
 size_t WiFiClient::write(const uint8_t *buf, size_t size)
 {
+    log_v("");
     int res =0;
     int retry = WIFI_CLIENT_MAX_WRITE_RETRY;
     int socketFileDescriptor = fd();
@@ -437,11 +431,13 @@ size_t WiFiClient::write(const uint8_t *buf, size_t size)
 
 size_t WiFiClient::write_P(PGM_P buf, size_t size)
 {
+    log_v("");
     return write(buf, size);
 }
 
 size_t WiFiClient::write(Stream &stream)
 {
+    log_v("");
     uint8_t * buf = (uint8_t *)malloc(1360);
     if(!buf){
         return 0;
@@ -460,6 +456,7 @@ size_t WiFiClient::write(Stream &stream)
 
 int WiFiClient::read(uint8_t *buf, size_t size)
 {
+    log_v("");
     int res = -1;
     if (_rxBuffer) {
         res = _rxBuffer->read(buf, size);
@@ -557,7 +554,7 @@ uint8_t WiFiClient::connected()
     return _connected;
 }
 
-IPAddress WiFiClient::remoteIP(int fd) const
+IPAddress WiFiClient::remoteIP(int fd)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof addr;
@@ -566,7 +563,7 @@ IPAddress WiFiClient::remoteIP(int fd) const
     return IPAddress((uint32_t)(s->sin_addr.s_addr));
 }
 
-uint16_t WiFiClient::remotePort(int fd) const
+uint16_t WiFiClient::remotePort(int fd)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof addr;
@@ -585,7 +582,7 @@ uint16_t WiFiClient::remotePort() const
     return remotePort(fd());
 }
 
-IPAddress WiFiClient::localIP(int fd) const
+IPAddress WiFiClient::localIP(int fd)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof addr;
@@ -594,7 +591,7 @@ IPAddress WiFiClient::localIP(int fd) const
     return IPAddress((uint32_t)(s->sin_addr.s_addr));
 }
 
-uint16_t WiFiClient::localPort(int fd) const
+uint16_t WiFiClient::localPort(int fd)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof addr;
@@ -620,7 +617,9 @@ bool WiFiClient::operator==(const WiFiClient& rhs)
 
 int WiFiClient::fd() const
 {
-    if (clientSocketHandle == NULL) {
+    if (clientSocketHandle == nullptr) {
+        log_e("fd() called, but clientSocketHandle is NULL");
+        esp_backtrace_print(5);
         return -1;
     } else {
         return clientSocketHandle->fd();
